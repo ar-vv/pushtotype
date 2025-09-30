@@ -1,0 +1,1 @@
+Hello. This is a test of speech transcription. Using Assembly I. The system should be able to transcribe both English and Russian text correctly.

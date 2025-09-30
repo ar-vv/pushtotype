@@ -1,0 +1,1 @@
+Create transcript failed: 409 {"error": "Your account is disabled. Please contact us at support@assemblyai.com for more information."}

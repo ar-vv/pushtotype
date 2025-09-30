@@ -1,0 +1,1 @@
+Ошибка: Transcriber.transcribe() got an unexpected keyword argument 'timeout'

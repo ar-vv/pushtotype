@@ -1,0 +1,1 @@
+Ошибка транскрибации: language_detection cannot be performed on files with no spoken audio.
