@@ -259,6 +259,28 @@ def chat_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+def start_telegram_bot():
+    """Запускает телеграм бота в отдельном потоке"""
+    try:
+        # Небольшая задержка, чтобы Flask успел запуститься
+        time.sleep(2)
+        print("🔄 Инициализация Telegram бота...", flush=True)
+        from telegram_bot import run_bot
+        print("✅ Модуль telegram_bot загружен, запускаю бота...", flush=True)
+        run_bot()
+    except Exception as e:
+        print(f"❌ Ошибка запуска Telegram бота: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", debug=False, port=port)
+    # Запускаем Telegram бота в отдельном потоке
+    telegram_bot_thread = threading.Thread(target=start_telegram_bot, daemon=True)
+    telegram_bot_thread.start()
+    
+    # Используем порт из конфига или ENV
+    port = int(os.environ.get("PORT", config.get("backend", {}).get("port", 5000)))
+    host = config.get("backend", {}).get("host", "0.0.0.0")
+    print(f"🚀 Запуск Flask сервера на {host}:{port}")
+    app.run(host=host, debug=False, port=port)
