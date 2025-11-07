@@ -5,8 +5,9 @@ final class StatusBarController {
     private let statusItem: NSStatusItem
     private let onShowStatus: () -> Void
     private let onQuit: () -> Void
-    var onChangeMainHotkey: (() -> Void)?
-    var onChangeQuestionHotkey: (() -> Void)?
+    var onChangeMainHotkey: (() -> Void)?          // Транскрибация + автоотправка
+    var onChangeTranscribeHotkey: (() -> Void)?    // Транскрибация
+    var onChangeAskHotkey: (() -> Void)?           // Вопрос
     var onRetryLastRecording: (() -> Void)?
     var onSelectAudioFile: (() -> Void)?
 
@@ -84,32 +85,44 @@ final class StatusBarController {
 
         // Горячие клавиши (отображаем и даем изменить)
         let mainHK = HotkeyStorage.shared.mainHotkey.displayString()
-        let qHK = HotkeyStorage.shared.questionHotkey.displayString()
+        let tHK = HotkeyStorage.shared.transcribeHotkey.displayString()
+        let aHK = HotkeyStorage.shared.askHotkey.displayString()
 
         let hkTitle = NSMenuItem(title: "Горячие клавиши", action: nil, keyEquivalent: "")
         hkTitle.isEnabled = false
         menu.addItem(hkTitle)
 
-        let mainItem = NSMenuItem(title: "Основная: \(mainHK)", action: nil, keyEquivalent: "")
+        let mainItem = NSMenuItem(title: "Транскрибация + автоотправка: \(mainHK)", action: nil, keyEquivalent: "")
         mainItem.isEnabled = false
         menu.addItem(mainItem)
 
-        let changeMain = NSMenuItem(title: "Задать для основной…", action: #selector(captureMainHotkey), keyEquivalent: "")
+        let changeMain = NSMenuItem(title: "Задать…", action: #selector(captureMainHotkey), keyEquivalent: "")
         changeMain.target = self
         menu.addItem(changeMain)
 
-        let questionItem = NSMenuItem(title: "Вопрос: \(qHK)", action: nil, keyEquivalent: "")
-        questionItem.isEnabled = false
-        menu.addItem(questionItem)
+        let tItem = NSMenuItem(title: "Транскрибация: \(tHK)", action: nil, keyEquivalent: "")
+        tItem.isEnabled = false
+        menu.addItem(tItem)
 
-        let changeQuestion = NSMenuItem(title: "Задать для вопроса…", action: #selector(captureQuestionHotkey), keyEquivalent: "")
-        changeQuestion.target = self
-        menu.addItem(changeQuestion)
+        let changeT = NSMenuItem(title: "Задать…", action: #selector(captureTranscribeHotkey), keyEquivalent: "")
+        changeT.target = self
+        menu.addItem(changeT)
+
+        let aItem = NSMenuItem(title: "Вопрос: \(aHK)", action: nil, keyEquivalent: "")
+        aItem.isEnabled = false
+        menu.addItem(aItem)
+
+        let changeA = NSMenuItem(title: "Задать…", action: #selector(captureAskHotkey), keyEquivalent: "")
+        changeA.target = self
+        menu.addItem(changeA)
 
         let instructionItem = NSMenuItem(title: "Удерживайте основную для записи", action: nil, keyEquivalent: "")
         instructionItem.isEnabled = false
         menu.addItem(instructionItem)
 
+        menu.addItem(NSMenuItem.separator())
+
+        // Разделитель перед служебными пунктами
         menu.addItem(NSMenuItem.separator())
 
         // Показать статус (существующая функция)
@@ -161,8 +174,12 @@ final class StatusBarController {
         onChangeMainHotkey?()
     }
 
-    @objc private func captureQuestionHotkey() {
-        onChangeQuestionHotkey?()
+    @objc private func captureTranscribeHotkey() {
+        onChangeTranscribeHotkey?()
+    }
+
+    @objc private func captureAskHotkey() {
+        onChangeAskHotkey?()
     }
 
 }

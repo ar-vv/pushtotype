@@ -26,7 +26,8 @@ final class BackendClient: @unchecked Sendable {
         try? (self.baseURL.absoluteString + "\n").data(using: .utf8)?.write(to: diagPath)
     }
 
-    func uploadAudio(fileURL: URL, completion: @escaping @Sendable (Result<String, Error>) -> Void) {
+    @discardableResult
+    func uploadAudio(fileURL: URL, completion: @escaping @Sendable (Result<String, Error>) -> Void) -> URLSessionDataTask? {
         let uploadURL = baseURL
             .appendingPathComponent("api")
             .appendingPathComponent("audio")
@@ -36,41 +37,32 @@ final class BackendClient: @unchecked Sendable {
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        // Иногда файл ещё не полностью финализирован сразу после stop().
-        // Сделаем несколько попыток прочитать его с короткой задержкой.
-        var audioData: Data?
-        for attempt in 1...5 {
-            if let data = try? Data(contentsOf: fileURL), !data.isEmpty {
-                audioData = data
-                break
-            }
-            usleep(100_000) // 100ms
+        guard let audioData = try? Data(contentsOf: fileURL) else {
+            completion(.failure(NSError(domain: "PushToType", code: -1, userInfo: [NSLocalizedDescriptionKey: "Не удалось прочитать файл"])));
+            return nil
         }
-        guard let audioData else {
-            completion(.failure(NSError(domain: "PushToType", code: -1, userInfo: [NSLocalizedDescriptionKey: "Файл пуст или недоступен"])));
-            return
-        }
-        PTLog.write("upload start file=\(fileURL.lastPathComponent) size=\(audioData.count) to=\(uploadURL.absoluteString)")
 
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        let filename = fileURL.lastPathComponent.isEmpty ? "audio.m4a" : fileURL.lastPathComponent
-        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
         body.append(audioData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
-        session.dataTask(with: request) { data, response, error in
+        let task = session.dataTask(with: request) { data, response, error in
             if let error {
-                PTLog.write("upload error: \(error.localizedDescription)")
+                #if DEBUG
+                print("[BackendClient] upload error to \(uploadURL): \(error.localizedDescription)")
+                #endif
                 completion(.failure(error))
                 return
             }
 
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                let body = String(data: data ?? Data(), encoding: .utf8) ?? "<no body>"
-                PTLog.write("upload http=\(http.statusCode) body=\(body)")
+                #if DEBUG
+                print("[BackendClient] upload HTTP error \(http.statusCode) for \(uploadURL)")
+                #endif
                 completion(.failure(NSError(domain: "PushToType", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Ошибка загрузки аудио (HTTP \(http.statusCode))"])))
                 return
             }
@@ -82,22 +74,23 @@ final class BackendClient: @unchecked Sendable {
 
             do {
                 let decoded = try JSONDecoder().decode(UploadResponse.self, from: data)
-                PTLog.write("upload success id=\(decoded.recording_id)")
                 completion(.success(decoded.recording_id))
             } catch {
-                let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
-                PTLog.write("upload decode error: \(error). body=\(body)")
                 completion(.failure(error))
             }
-        }.resume()
+        }
+        task.resume()
+        return task
     }
 
-    func pollTranscription(recordingId: String, completion: @escaping @Sendable (Result<String, Error>) -> Void) {
+    @discardableResult
+    func pollTranscription(recordingId: String, completion: @escaping @Sendable (Result<String, Error>) -> Void) -> TranscriptionPoller {
         let poller = TranscriptionPoller(baseURL: baseURL, session: session)
         poller.startPolling(recordingId: recordingId, completion: completion)
+        return poller
     }
 
-    private final class TranscriptionPoller: @unchecked Sendable {
+    final class TranscriptionPoller: @unchecked Sendable {
         private let baseURL: URL
         private let session: URLSession
         private var timer: Timer?
@@ -109,6 +102,7 @@ final class BackendClient: @unchecked Sendable {
         private var startDate = Date()
         private var completion: (@Sendable (Result<String, Error>) -> Void)?
         private var recordingId: String = ""
+        private var isCancelled = false
 
         init(baseURL: URL, session: URLSession) {
             self.baseURL = baseURL
@@ -123,6 +117,15 @@ final class BackendClient: @unchecked Sendable {
             startDate = Date()
             scheduleNextPoll()
         }
+
+        func cancel() {
+            DispatchQueue.main.async {
+                self.isCancelled = true
+                self.timer?.invalidate()
+                self.timer = nil
+                self.completion = nil
+            }
+        }
         
         private func scheduleNextPoll() {
             DispatchQueue.main.async {
@@ -135,6 +138,7 @@ final class BackendClient: @unchecked Sendable {
         }
 
         @objc private func handleTimer() {
+            if isCancelled { return }
             if Date().timeIntervalSince(startDate) > timeout {
                 finish(with: .failure(NSError(domain: "PushToType", code: -3, userInfo: [NSLocalizedDescriptionKey: "Таймаут"])))
                 return
@@ -145,20 +149,27 @@ final class BackendClient: @unchecked Sendable {
                 .appendingPathComponent("transcription")
                 .appendingPathComponent(recordingId)
             session.dataTask(with: url) { data, response, error in
+                if self.isCancelled { return }
                 if let error {
-                    PTLog.write("poll error: \(error.localizedDescription)")
+                    #if DEBUG
+                    print("[BackendClient] poll error from \(url): \(error.localizedDescription)")
+                    #endif
                     self.finish(with: .failure(error))
                     return
                 }
 
                 if let http = response as? HTTPURLResponse {
                     if http.statusCode == 404 {
-                        PTLog.write("poll 404 for \(url.absoluteString)")
+                        #if DEBUG
+                        print("[BackendClient] poll 404 for \(url)")
+                        #endif
                         self.finish(with: .failure(NSError(domain: "PushToType", code: 404, userInfo: [NSLocalizedDescriptionKey: "Unknown job (404)"])) )
                         return
                     }
                     if !(200...299).contains(http.statusCode) {
-                        PTLog.write("poll HTTP=\(http.statusCode)")
+                        #if DEBUG
+                        print("[BackendClient] poll HTTP \(http.statusCode) for \(url)")
+                        #endif
                         self.increasePollingInterval()
                         self.scheduleNextPoll()
                         return
@@ -173,8 +184,6 @@ final class BackendClient: @unchecked Sendable {
                 }
 
                 guard let decoded = try? JSONDecoder().decode(TranscriptionResponse.self, from: data) else {
-                    let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
-                    PTLog.write("poll decode fail body=\(body)")
                     // Увеличиваем интервал и планируем следующий запрос
                     self.increasePollingInterval()
                     self.scheduleNextPoll()
@@ -182,14 +191,14 @@ final class BackendClient: @unchecked Sendable {
                 }
 
                 if decoded.status.lowercased() == "ready", let transcription = decoded.transcription {
-                    PTLog.write("poll ready, len=\(transcription.count)")
                     self.finish(with: .success(transcription))
                 } else if decoded.status.lowercased() == "error" {
                     let message = decoded.error ?? "Неизвестная ошибка транскрибации"
-                    PTLog.write("poll error status: \(message)")
+                    #if DEBUG
+                    print("[BackendClient] transcription error: \(message)")
+                    #endif
                     self.finish(with: .failure(NSError(domain: "PushToType", code: -4, userInfo: [NSLocalizedDescriptionKey: message])))
                 } else {
-                    PTLog.write("poll processing")
                     // Статус "processing" - увеличиваем интервал и планируем следующий запрос
                     self.increasePollingInterval()
                     self.scheduleNextPoll()

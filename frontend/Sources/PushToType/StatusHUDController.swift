@@ -9,10 +9,12 @@ final class StatusHUDController: @unchecked Sendable {
     private let largeTextView: NSTextView
     private let closeButton: NSButton
     private let retryButton: NSButton
+    private let cancelButton: NSButton
     private var hideWorkItem: DispatchWorkItem?
     private let compactWidth: CGFloat = 260
     
     var onRetry: (() -> Void)?
+    var onCancel: (() -> Void)?
 
     init() {
         let panelSize = NSSize(width: compactWidth, height: 110)
@@ -98,18 +100,30 @@ final class StatusHUDController: @unchecked Sendable {
         retryButton.font = .systemFont(ofSize: 12)
         retryButton.translatesAutoresizingMaskIntoConstraints = false
         retryButton.isHidden = true // Показывается только при ошибке
+
+        // Кнопка отмены процесса
+        cancelButton = NSButton()
+        cancelButton.setButtonType(.momentaryPushIn)
+        cancelButton.bezelStyle = .rounded
+        cancelButton.title = "Отмена"
+        cancelButton.font = .systemFont(ofSize: 12)
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        cancelButton.isHidden = true
         
         // Настраиваем targets после инициализации всех свойств
         closeButton.target = self
         closeButton.action = #selector(closeButtonClicked)
         retryButton.target = self
         retryButton.action = #selector(retryButtonClicked)
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelButtonClicked)
         
         content.addSubview(titleLabel)
         content.addSubview(detailLabel)
         content.addSubview(scrollView)
         content.addSubview(closeButton)
         content.addSubview(retryButton)
+        content.addSubview(cancelButton)
 
         NSLayoutConstraint.activate([
             // Кнопка закрытия в правом верхнем углу
@@ -127,10 +141,14 @@ final class StatusHUDController: @unchecked Sendable {
             detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
             
-            // Кнопка повтора под текстом
-            retryButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            // Кнопки внизу
+            retryButton.centerXAnchor.constraint(equalTo: content.centerXAnchor, constant: 60),
             retryButton.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 12),
-            retryButton.heightAnchor.constraint(equalToConstant: 24)
+            retryButton.heightAnchor.constraint(equalToConstant: 24),
+
+            cancelButton.centerXAnchor.constraint(equalTo: content.centerXAnchor, constant: -60),
+            cancelButton.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 12),
+            cancelButton.heightAnchor.constraint(equalToConstant: 24)
         ])
 
         // Констрейнты для большого режима
@@ -158,9 +176,19 @@ final class StatusHUDController: @unchecked Sendable {
             // Показываем кнопку retry только при ошибках
             let isError = stage.title.contains("Ошибка")
             self.retryButton.isHidden = !isError
+
+            // Показываем кнопку Отмена в стадиях: запись, отправка, ожидание
+            let showCancel: Bool
+            switch stage {
+            case .recording, .uploading, .waitingForTranscription:
+                showCancel = true
+            default:
+                showCancel = false
+            }
+            self.cancelButton.isHidden = !showCancel
             
             // Увеличиваем высоту панели если есть кнопка retry
-            let newHeight: CGFloat = isError ? 140 : 110
+            let newHeight: CGFloat = (isError || showCancel) ? 140 : 110
             let newSize = NSSize(width: self.compactWidth, height: newHeight)
             let newFrame = NSRect(origin: self.panel.frame.origin, size: newSize)
             self.panel.setFrame(newFrame, display: true)
@@ -321,6 +349,11 @@ final class StatusHUDController: @unchecked Sendable {
     
     @objc private func retryButtonClicked() {
         onRetry?()
+        hidePanel()
+    }
+
+    @objc private func cancelButtonClicked() {
+        onCancel?()
         hidePanel()
     }
     

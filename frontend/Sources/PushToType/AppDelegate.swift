@@ -9,14 +9,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backendClient = BackendClient()
     private let statusHUD = StatusHUDController()
     private let chatWeb = ChatWebViewController()
-    private var isQuestionMode = false
+    
+    private enum RecordingAction {
+        case sendEnter
+        case noEnter
+        case ask
+    }
+    private var currentAction: RecordingAction = .sendEnter
 
     private var currentRecordingURL: URL?
     private var isRequestingAccessibility = false
+    private var currentUploadTask: URLSessionDataTask?
+    private var currentPoller: BackendClient.TranscriptionPoller?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
         configureHotkeyCallbacks()
+        statusHUD.onCancel = { [weak self] in
+            self?.cancelCurrentFlow()
+        }
         requestMicrophoneAccess()
     }
 
@@ -41,22 +52,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.selectAndTranscribeFile()
         }
 
-        // Обработчики изменения хоткеев
+        // Подключаем захват хоткеев
         statusBarController.onChangeMainHotkey = { [weak self] in
-            self?.beginHotkeyCapture(target: .main)
+            guard let self else { return }
+            self.statusHUD.showNotice(title: "Задайте сочетание", detail: "Нажмите новое сочетание для основной функции")
+            self.hotkeyMonitor.beginCapture(.main)
         }
-        statusBarController.onChangeQuestionHotkey = { [weak self] in
-            self?.beginHotkeyCapture(target: .question)
+
+        statusBarController.onChangeTranscribeHotkey = { [weak self] in
+            guard let self else { return }
+            self.statusHUD.showNotice(title: "Задайте сочетание", detail: "Нажмите новое сочетание для транскрибации без Enter")
+            self.hotkeyMonitor.beginCapture(.transcribe)
+        }
+
+        statusBarController.onChangeAskHotkey = { [weak self] in
+            guard let self else { return }
+            self.statusHUD.showNotice(title: "Задайте сочетание", detail: "Нажмите новое сочетание для режима Вопрос")
+            self.hotkeyMonitor.beginCapture(.ask)
         }
     }
 
     private func configureHotkeyCallbacks() {
-        // Инициализация хоткеев из хранилища
-        hotkeyMonitor.mainHotkey = HotkeyStorage.shared.mainHotkey
-        hotkeyMonitor.questionHotkey = HotkeyStorage.shared.questionHotkey
+        // Сохранение результатов захвата хоткеев
+        hotkeyMonitor.onCaptureFinished = { [weak self] target, hotkey in
+            switch target {
+            case .main:
+                HotkeyStorage.shared.mainHotkey = hotkey
+            case .transcribe:
+                HotkeyStorage.shared.transcribeHotkey = hotkey
+            case .ask:
+                HotkeyStorage.shared.askHotkey = hotkey
+            }
+            Task { @MainActor [weak self] in
+                self?.statusBarController.updateMenu()
+                self?.statusHUD.showNotice(title: "Готово", detail: "Горячая клавиша обновлена")
+            }
+        }
 
         hotkeyMonitor.onHotkeyDown = { [weak self] in
-            self?.isQuestionMode = false
+            self?.currentAction = .sendEnter
             self?.beginRecording()
         }
 
@@ -64,43 +98,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.finishRecording()
         }
 
-        hotkeyMonitor.onQuestionHotkeyDown = { [weak self] in
-            self?.isQuestionMode = true
+        hotkeyMonitor.onTranscribeHotkeyDown = { [weak self] in
+            self?.currentAction = .noEnter
             self?.beginRecording()
         }
 
-        hotkeyMonitor.onQuestionHotkeyUp = { [weak self] in
+        hotkeyMonitor.onTranscribeHotkeyUp = { [weak self] in
+            self?.finishRecording()
+        }
+
+        hotkeyMonitor.onAskHotkeyDown = { [weak self] in
+            self?.currentAction = .ask
+            self?.beginRecording()
+        }
+
+        hotkeyMonitor.onAskHotkeyUp = { [weak self] in
             self?.finishRecording()
         }
 
         hotkeyMonitor.start()
 
-        // Колбэк завершения захвата комбинации
-        hotkeyMonitor.onCaptureFinished = { [weak self] target, hotkey in
-            guard let self else { return }
-            switch target {
-            case .main:
-                HotkeyStorage.shared.mainHotkey = hotkey
-                self.hotkeyMonitor.mainHotkey = hotkey
-            case .question:
-                HotkeyStorage.shared.questionHotkey = hotkey
-                self.hotkeyMonitor.questionHotkey = hotkey
-            }
-            self.statusBarController.updateMenu()
-            let name = (target == .main) ? "основной функции" : "режима вопроса"
-            self.statusHUD.showNotice(title: "Сочетание сохранено",
-                                      detail: "Новое сочетание для \(name): \(hotkey.displayString())")
-        }
-    }
-
-    private func beginHotkeyCapture(target: GlobalHotkeyMonitor.CaptureTarget) {
-        switch target {
-        case .main:
-            statusHUD.showNotice(title: "Задать сочетание", detail: "Нажмите желаемое сочетание для основной функции", autoHide: nil)
-        case .question:
-            statusHUD.showNotice(title: "Задать сочетание", detail: "Нажмите желаемое сочетание для режима вопроса", autoHide: nil)
-        }
-        hotkeyMonitor.beginCapture(for: target)
     }
 
     private func beginRecording() {
@@ -141,8 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusHUD.update(stage: .uploading)
 
         // Дадим системе финализировать файл
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.backendClient.uploadAudio(fileURL: recordingURL) { [weak self] result in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.currentUploadTask = self.backendClient.uploadAudio(fileURL: recordingURL) { [weak self] result in
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let recordingId):
@@ -213,22 +231,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleUploadSuccess(recordingId: String) {
         statusHUD.update(stage: .waitingForTranscription)
 
-        backendClient.pollTranscription(recordingId: recordingId) { [weak self] pollResult in
+        currentPoller = backendClient.pollTranscription(recordingId: recordingId) { [weak self] pollResult in
             guard let self else { return }
             DispatchQueue.main.async {
                 switch pollResult {
                 case .success(let transcription):
-                    if self.isQuestionMode {
+                    switch self.currentAction {
+                    case .ask:
                         self.askChatAndShowAnswer(transcription: transcription)
-                    } else {
+                    case .noEnter:
                         self.statusHUD.update(stage: .completed)
-                        self.pushTranscriptionToUser(transcription)
+                        self.pushTranscriptionToUser(transcription, sendEnter: false)
+                    case .sendEnter:
+                        self.statusHUD.update(stage: .completed)
+                        self.pushTranscriptionToUser(transcription, sendEnter: true)
                     }
                 case .failure(let error):
                     self.statusHUD.update(stage: .error(error.localizedDescription))
                 }
             }
         }
+    }
+
+    // Отмена текущего процесса: запись/загрузка/ожидание
+    private func cancelCurrentFlow() {
+        // Останавливаем запись, если идёт
+        _ = audioRecorder.stopRecording()
+        currentRecordingURL = nil
+        // Отменяем загрузку и поллинг
+        currentUploadTask?.cancel()
+        currentUploadTask = nil
+        currentPoller?.cancel()
+        currentPoller = nil
+        // Сбрасываем HUD и состояние
+        statusHUD.hideImmediately()
+        // Сообщаем бэкенду/поллеру прекратить ожидание — через отдельный экземпляр poller пока не поддерживается,
+        // поэтому просто сбросим callback: дальнейшие ответы будут игнорироваться, так как self уже не выполнит вставку.
+        // Для гарантии: переведём в idle
+        statusHUD.update(stage: .idle)
     }
 
     private func askChatAndShowAnswer(transcription: String) {
@@ -246,9 +286,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func pushTranscriptionToUser(_ transcription: String) {
+    private func pushTranscriptionToUser(_ transcription: String, sendEnter: Bool) {
         ClipboardManager.shared.store(string: transcription)
-        AccessibilityTextInjector.shared.pasteFromClipboard()
+        AccessibilityTextInjector.shared.pasteFromClipboard(sendEnter: sendEnter)
     }
 
     private func requestMicrophoneAccess() {

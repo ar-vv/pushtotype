@@ -12,93 +12,15 @@ import requests
 
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.json")
 
-# ----------------------
-# Конфигурация бэкенда
-# ----------------------
-
-def _load_backend_config() -> dict:
-    """Загружает конфиг с диска с поддержкой стандартных путей и ENV-перекрытий.
-
-    Порядок поиска файла:
-      1) ENV PUSHTOTYPE_CONFIG (если задан и файл существует)
-      2) ./config.json в корне проекта (../config.json относительно server.py)
-      3) /etc/pushtotype/config.json
-
-    ENV-перекрытия отдельных полей (если заданы):
-      - BACKEND_HOST, BACKEND_PORT, BACKEND_BASE_URL
-      - ASSEMBLYAI_API_KEY, OPENAI_API_KEY, OPENAI_MODEL
-    """
-
-    # Кандидаты путей
-    candidates = []
-    env_cfg = os.environ.get("PUSHTOTYPE_CONFIG")
-    if env_cfg:
-        candidates.append(env_cfg)
-    # проектный config рядом с репозиторием
-    candidates.append(os.path.join(os.path.dirname(__file__), "..", "config.json"))
-    # системный путь
-    candidates.append("/etc/pushtotype/config.json")
-
-    config_data: dict = {}
-    for path in candidates:
-        try:
-            if path and os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    config_data = json.load(f)
-                break
-        except Exception:
-            # Переходим к следующему кандидату
-            pass
-
-    # Дефолты, если файл не найден или неполный
-    backend_cfg = (config_data.get("backend") or {})
-    frontend_cfg = (config_data.get("frontend") or {})
-    api_keys_cfg = (config_data.get("api_keys") or {})
-    openai_cfg = (config_data.get("openai") or {})
-
-    host = os.environ.get("BACKEND_HOST") or backend_cfg.get("host") or "0.0.0.0"
-    port_val = os.environ.get("BACKEND_PORT") or backend_cfg.get("port") or 5001
-    try:
-        port = int(port_val)
-    except (TypeError, ValueError):
-        port = 5001
-
-    base_url = os.environ.get("BACKEND_BASE_URL") or backend_cfg.get("base_url")
-    if not base_url:
-        # Пытаемся собрать base_url из host/port, предполагая http
-        base_url = f"http://{host}:{port}"
-
-    assemblyai_key = os.environ.get("ASSEMBLYAI_API_KEY") or api_keys_cfg.get("assemblyai", "")
-    openai_key = os.environ.get("OPENAI_API_KEY") or api_keys_cfg.get("openai", "")
-    openai_model = os.environ.get("OPENAI_MODEL") or (openai_cfg.get("model") or "gpt-4o-mini")
-
-    return {
-        "backend": {
-            "host": host,
-            "port": port,
-            "base_url": base_url,
-        },
-        "frontend": {
-            "polling_interval": frontend_cfg.get("polling_interval", 1.5),
-            "timeout": frontend_cfg.get("timeout", 180),
-        },
-        "api_keys": {
-            "assemblyai": assemblyai_key,
-            "openai": openai_key,
-        },
-        "openai": {
-            "model": openai_model,
-        },
-    }
-
-
-config = _load_backend_config()
-
-# Инициализация зависимостей по конфигу/ENV
 os.makedirs(DATA_DIR, exist_ok=True)
 
-aai.settings.api_key = config["api_keys"].get("assemblyai", "")
+# Load config and initialize AssemblyAI
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+aai.settings.api_key = config["api_keys"]["assemblyai"]
 OPENAI_API_KEY = config["api_keys"].get("openai", "")
 OPENAI_MODEL = (config.get("openai") or {}).get("model", "gpt-4o-mini")
 
@@ -262,9 +184,6 @@ def call_openai_chat(question: str) -> str:
         return f"Chat exception: {e}"
 
 
-# (Веб-поиск не используется; функция удалена по согласованию)
-
-
 @app.post("/api/audio")
 def receive_audio():
     if "audio" not in request.files:
@@ -341,11 +260,5 @@ def chat_endpoint():
 
 
 if __name__ == "__main__":
-    # Определяем host/port: приоритет у переменных окружения, затем config.json, затем дефолты
-    cfg_backend = (config.get("backend") or {})
-    host = os.environ.get("HOST") or cfg_backend.get("host") or "0.0.0.0"
-    try:
-        port = int(os.environ.get("PORT") or cfg_backend.get("port") or 5001)
-    except (TypeError, ValueError):
-        port = 5001
-    app.run(host=host, debug=False, port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", debug=False, port=port)

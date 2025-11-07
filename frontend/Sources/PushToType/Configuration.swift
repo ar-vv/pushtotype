@@ -31,6 +31,7 @@ final class Configuration: @unchecked Sendable {
     static let shared = Configuration()
     
     private let config: AppConfiguration
+    private let userDefaults = UserDefaults.standard
     
     private init() {
         // Ищем файл конфигурации: приоритет у ENV PUSHTOTYPE_CONFIG, затем ./config.json в корне репо.
@@ -89,4 +90,6 @@ final class Configuration: @unchecked Sendable {
     var timeout: TimeInterval {
         return config.frontend.timeout
     }
+    
+    // Ранее здесь была настройка автоотправки, теперь управление через разные хоткеи
 }

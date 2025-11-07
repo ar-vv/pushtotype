@@ -4,32 +4,26 @@ import Carbon.HIToolbox
 final class GlobalHotkeyMonitor: @unchecked Sendable {
     var onHotkeyDown: (() -> Void)?
     var onHotkeyUp: (() -> Void)?
-    var onQuestionHotkeyDown: (() -> Void)?
-    var onQuestionHotkeyUp: (() -> Void)?
-
-    // Текущие хоткеи (по умолчанию Ctrl+V для основной, Ctrl+B для вопроса)
-    var mainHotkey: Hotkey = Hotkey(keyCode: CGKeyCode(kVK_ANSI_V), modifiers: .init(rawValue: 1 << 0)) // Ctrl+V
-    var questionHotkey: Hotkey = Hotkey(keyCode: CGKeyCode(kVK_ANSI_B), modifiers: .init(rawValue: 1 << 0)) // Ctrl+B
-
-    // Режим захвата нового сочетания для конкретной функции
-    enum CaptureTarget { case main, question }
-    private var isCapturing: Bool = false
-    private var captureTarget: CaptureTarget = .main
+    var onTranscribeHotkeyDown: (() -> Void)?
+    var onTranscribeHotkeyUp: (() -> Void)?
+    var onAskHotkeyDown: (() -> Void)?
+    var onAskHotkeyUp: (() -> Void)?
     var onCaptureFinished: ((CaptureTarget, Hotkey) -> Void)?
+
+    enum CaptureTarget {
+        case main
+        case transcribe
+        case ask
+    }
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
-    private var activeTarget: CaptureTarget? = nil
-
-    // Состояние захвата: фиксируем комбинацию после полного отпускания всех клавиш
-    private var captureObservedKey: CGKeyCode?
-    private var captureModifiersAtKeyDown: Hotkey.Modifiers = []
-    private var captureKeyReleased: Bool = false
+    private var captureTarget: CaptureTarget?
 
     func start() {
         guard eventTap == nil else { return }
-        let eventsMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+        let eventsMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
                                           place: .headInsertEventTap,
                                           options: .defaultTap,
@@ -63,134 +57,75 @@ final class GlobalHotkeyMonitor: @unchecked Sendable {
         eventTap = nil
     }
 
+    func beginCapture(_ target: CaptureTarget) {
+        captureTarget = target
+    }
+
     private func handle(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
+        guard type == .keyDown || type == .keyUp else {
             return Unmanaged.passUnretained(event)
         }
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
-        let modifiers = Hotkey.Modifiers(from: flags)
 
-        // Режим захвата: накапливаем модификаторы на момент нажатия основной клавиши
-        if isCapturing {
-            if type == .keyDown {
-                if !isModifierKey(keyCode) {
-                    captureObservedKey = keyCode
-                    captureModifiersAtKeyDown = modifiers
-                    captureKeyReleased = false
-                }
-            } else if type == .keyUp {
-                if let observed = captureObservedKey, keyCode == observed {
-                    captureKeyReleased = true
-                }
+        // Режим захвата: любая клавиша сохраняет хоткей с текущими модификаторами
+        if type == .keyDown, let target = captureTarget {
+            let captured = Hotkey(keyCode: keyCode, modifiers: .init(from: flags))
+            captureTarget = nil
+            Task { @MainActor [weak self] in
+                self?.onCaptureFinished?(target, captured)
             }
-
-            // Завершение: основная клавиша отпущена И модификаторы отпущены (flags пустые)
-            if captureKeyReleased && Hotkey.Modifiers(from: flags).rawValue == 0 {
-                if let finalKey = captureObservedKey {
-                    let captured = Hotkey(keyCode: finalKey, modifiers: captureModifiersAtKeyDown)
-                    let target = captureTarget
-                    // reset
-                    isCapturing = false
-                    captureObservedKey = nil
-                    captureModifiersAtKeyDown = []
-                    captureKeyReleased = false
-                    Task { @MainActor [weak self] in
-                        self?.onCaptureFinished?(target, captured)
-                    }
-                }
-                return Unmanaged.passUnretained(event)
-            }
-
             return Unmanaged.passUnretained(event)
         }
 
-        let isMain = mainHotkey.matches(flags: flags, keyCode: keyCode)
-        let isQuestion = questionHotkey.matches(flags: flags, keyCode: keyCode)
+        // Сопоставление с сохранёнными хоткеями
+        let mainHK = HotkeyStorage.shared.mainHotkey            // с Enter
+        let tHK = HotkeyStorage.shared.transcribeHotkey        // без Enter
+        let aHK = HotkeyStorage.shared.askHotkey               // вопрос
 
-        if type == .keyDown && isMain && !isPressed {
+        if type == .keyDown && mainHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
             isPressed = true
-            activeTarget = .main
             Task { @MainActor [weak self] in
                 self?.onHotkeyDown?()
             }
         }
 
-        if type == .keyUp && isPressed && activeTarget == .main && keyCode == mainHotkey.keyCode {
+        if type == .keyUp && isPressed && mainHK.matches(flags: flags, keyCode: keyCode) {
             isPressed = false
-            activeTarget = nil
             Task { @MainActor [weak self] in
                 self?.onHotkeyUp?()
             }
         }
 
-        // Обработка режима вопроса по аналогии с удержанием
-        if type == .keyDown && isQuestion && !isPressed {
+        if type == .keyDown && tHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
             isPressed = true
-            activeTarget = .question
             Task { @MainActor [weak self] in
-                self?.onQuestionHotkeyDown?()
+                self?.onTranscribeHotkeyDown?()
             }
         }
 
-        if type == .keyUp && isPressed && activeTarget == .question && keyCode == questionHotkey.keyCode {
+        if type == .keyUp && isPressed && tHK.matches(flags: flags, keyCode: keyCode) {
             isPressed = false
-            activeTarget = nil
             Task { @MainActor [weak self] in
-                self?.onQuestionHotkeyUp?()
+                self?.onTranscribeHotkeyUp?()
             }
         }
 
-        // Если пользователь отпустил обязательный модификатор — завершаем текущую активность
-        if type == .flagsChanged && isPressed {
-            switch activeTarget {
-            case .main:
-                if !requiredModifiers(mainHotkey.modifiers, containedIn: flags) {
-                    isPressed = false
-                    activeTarget = nil
-                    Task { @MainActor [weak self] in
-                        self?.onHotkeyUp?()
-                    }
-                }
-            case .question:
-                if !requiredModifiers(questionHotkey.modifiers, containedIn: flags) {
-                    isPressed = false
-                    activeTarget = nil
-                    Task { @MainActor [weak self] in
-                        self?.onQuestionHotkeyUp?()
-                    }
-                }
-            case .none:
-                break
+        if type == .keyDown && aHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
+            isPressed = true
+            Task { @MainActor [weak self] in
+                self?.onAskHotkeyDown?()
+            }
+        }
+
+        if type == .keyUp && isPressed && aHK.matches(flags: flags, keyCode: keyCode) {
+            isPressed = false
+            Task { @MainActor [weak self] in
+                self?.onAskHotkeyUp?()
             }
         }
 
         return Unmanaged.passUnretained(event)
-    }
-
-    // Публичный API: старт захвата новой комбинации для указанной цели
-    func beginCapture(for target: CaptureTarget) {
-        isCapturing = true
-        captureTarget = target
-        captureObservedKey = nil
-        captureModifiersAtKeyDown = []
-        captureKeyReleased = false
-    }
-
-    private func requiredModifiers(_ required: Hotkey.Modifiers, containedIn flags: CGEventFlags) -> Bool {
-        let current = Hotkey.Modifiers(from: flags)
-        // Требуемые модификаторы должны быть подмножеством текущих (а не строго равны)
-        return (current.rawValue & required.rawValue) == required.rawValue
-    }
-
-    private func isModifierKey(_ keyCode: CGKeyCode) -> Bool {
-        let mods: [CGKeyCode] = [
-            CGKeyCode(kVK_Command), CGKeyCode(kVK_RightCommand),
-            CGKeyCode(kVK_Shift), CGKeyCode(kVK_RightShift),
-            CGKeyCode(kVK_Option), CGKeyCode(kVK_RightOption),
-            CGKeyCode(kVK_Control), CGKeyCode(kVK_RightControl)
-        ]
-        return mods.contains(keyCode)
     }
 }

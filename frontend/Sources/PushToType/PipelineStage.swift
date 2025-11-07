@@ -9,6 +9,7 @@ enum PipelineStage {
     case completed
     case awaitingAccessibility
     case error(String)
+    case info(String)
 
     var title: String {
         switch self {
@@ -28,6 +29,8 @@ enum PipelineStage {
             return "Нужен доступ к доступности"
         case .error:
             return "Ошибка"
+        case .info:
+            return "Инфо"
         }
     }
 
@@ -48,6 +51,8 @@ enum PipelineStage {
         case .awaitingAccessibility:
             return "Разрешите доступ в настройках"
         case .error(let message):
+            return message
+        case .info(let message):
             return message
         }
     }
