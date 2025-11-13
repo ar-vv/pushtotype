@@ -83,6 +83,97 @@ def upload_audio_to_backend(audio_path: str) -> Optional[str]:
         return None
 
 
+def format_text_with_chatgpt(text: str) -> Optional[str]:
+    """Форматирует текст через ChatGPT API бэкенда. Возвращает отформатированный текст или None."""
+    try:
+        base_url = (config["backend"]["base_url"]).rstrip("/")
+        chat_url = f"{base_url}/api/chat"
+        
+        # Промпт для форматирования транскрипции
+        prompt = f"""Отформатируй следующую транскрипцию аудио сообщения. Сделай текст читабельным:
+- Разбей на абзацы по смыслу
+- Добавь правильную пунктуацию
+- Исправь очевидные ошибки распознавания
+- Сохрани оригинальный смысл и стиль
+
+Транскрипция:
+{text}"""
+        
+        print(f"[ChatGPT] Отправляю запрос на форматирование: {chat_url}")
+        resp = requests.post(
+            chat_url,
+            json={"question": prompt},
+            headers={"Content-Type": "application/json"},
+            timeout=60
+        )
+        
+        print(f"[ChatGPT] Ответ: статус {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json() or {}
+            formatted_text = data.get("answer") or ""
+            if formatted_text:
+                print(f"[ChatGPT] Получен отформатированный текст: {len(formatted_text)} символов")
+                return formatted_text
+            else:
+                print(f"[ChatGPT] Пустой ответ от ChatGPT")
+                return None
+        else:
+            print(f"[ChatGPT] Ошибка: {resp.status_code} {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"[ChatGPT] Исключение: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def create_short_summary_with_chatgpt(text: str) -> Optional[str]:
+    """Создает короткую версию текста через ChatGPT API бэкенда. Возвращает краткое саммари или None."""
+    try:
+        base_url = (config["backend"]["base_url"]).rstrip("/")
+        chat_url = f"{base_url}/api/chat"
+        
+        # Промпт для создания короткой версии
+        prompt = f"""Создай короткую версию следующего текста.
+Пиши от лица того, кто написал сообщение, как будто ты сам являешься этим человеком и решил написать сообщение коротко и лаконично.
+Подумай как сказать все что написано в изначальном тексте, но короче, понятнее и без воды.
+Самое важное сохранить информацию и смысл, но убрать все лишнее, что отвлекает от сути
+Подсказки:
+- Убери все лишние слова: вводные слова, слова-паразиты, повторения, воду
+- Структурируй информацию (используй списки, абзацы)
+- Убери эмоциональные вставки
+
+Текст:
+{text}"""
+        
+        print(f"[ChatGPT] Отправляю запрос на создание короткой версии: {chat_url}")
+        resp = requests.post(
+            chat_url,
+            json={"question": prompt},
+            headers={"Content-Type": "application/json"},
+            timeout=60
+        )
+        
+        print(f"[ChatGPT] Ответ на короткую версию: статус {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json() or {}
+            short_text = data.get("answer") or ""
+            if short_text:
+                print(f"[ChatGPT] Получена короткая версия: {len(short_text)} символов")
+                return short_text
+            else:
+                print(f"[ChatGPT] Пустой ответ на короткую версию")
+                return None
+        else:
+            print(f"[ChatGPT] Ошибка короткой версии: {resp.status_code} {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"[ChatGPT] Исключение при создании короткой версии: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def poll_transcription_from_backend(recording_id: str, timeout_seconds: int = 180) -> Optional[str]:
     """Опрашивает бэкенд для получения транскрипции. Возвращает текст или None."""
     try:
@@ -194,8 +285,17 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Неизвестный тип, игнорируем
         return
     
-    # Отправляем сообщение о начале обработки
-    status_message = await message.reply_text("🎤 Обрабатываю аудио...")
+    # Отправляем саммари перед началом обработки
+    duration_info = ""
+    if message.voice:
+        duration = message.voice.duration
+        duration_info = f" ({duration}с)"
+    elif message.audio:
+        duration = getattr(message.audio, 'duration', None)
+        if duration:
+            duration_info = f" ({duration}с)"
+    
+    status_message = await message.reply_text(f"🎤 Получено аудио сообщение{duration_info}\n🔄 Начинаю обработку...")
     
     try:
 
@@ -206,6 +306,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Скачиваем файл
         print(f"📥 Скачиваю файл в: {audio_path}")
+        await status_message.edit_text(f"🎤 Получено аудио сообщение{duration_info}\n📥 Скачиваю файл...")
         await file.download_to_drive(custom_path=audio_path)
         
         # Проверяем, что файл скачался
@@ -217,7 +318,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"✅ Файл скачан, размер: {file_size} байт")
         
         # Обновляем статус
-        await status_message.edit_text("🔄 Загружаю на бэкенд...")
+        await status_message.edit_text(f"🎤 Получено аудио сообщение{duration_info}\n🔄 Загружаю на бэкенд...")
         
         # Загружаем файл на бэкенд через API (как фронтенд)
         recording_id = upload_audio_to_backend(audio_path)
@@ -233,7 +334,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Обновляем статус
-        await status_message.edit_text("🔄 Делаю транскрипцию...")
+        await status_message.edit_text(f"🎤 Получено аудио сообщение{duration_info}\n🔄 Делаю транскрипцию...")
         
         # Опрашиваем бэкенд для получения транскрипции (как фронтенд)
         print(f"🔄 Ожидаю транскрипцию для recording_id: {recording_id}")
@@ -255,7 +356,37 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = transcription[6:]  # Убираем префикс "ERROR:"
                 await status_message.edit_text(f"❌ Ошибка транскрипции:\n\n{error_msg}")
             else:
-                await status_message.edit_text(f"✅ Транскрипция:\n\n{transcription}")
+                # Форматируем текст через ChatGPT
+                await status_message.edit_text(f"🎤 Получено аудио сообщение{duration_info}\n✅ Транскрипция получена\n🎨 Форматирую текст...")
+                
+                formatted_text = format_text_with_chatgpt(transcription)
+                
+                if not formatted_text:
+                    # Если форматирование не удалось, используем оригинальную транскрипцию
+                    print("[ChatGPT] Форматирование не удалось, использую оригинальную транскрипцию")
+                    formatted_text = transcription
+                
+                # Создаем короткую версию
+                await status_message.edit_text(f"🎤 Получено аудио сообщение{duration_info}\n✅ Транскрипция получена\n📝 Создаю короткую версию...")
+                
+                short_version = create_short_summary_with_chatgpt(formatted_text)
+                
+                # Отправляем обе версии
+                # Сначала короткую версию
+                if short_version:
+                    await message.reply_text(f"📋 **Короткая версия (саммари):**\n\n{short_version}", parse_mode="Markdown")
+                else:
+                    print("[ChatGPT] Создание короткой версии не удалось")
+                    # Если короткая версия не получилась, отправляем только отформатированную
+                
+                # Затем полную отформатированную версию
+                await message.reply_text(f"📄 **Полная версия (оригинал):**\n\n{formatted_text}", parse_mode="Markdown")
+                
+                # Удаляем статусное сообщение
+                try:
+                    await status_message.delete()
+                except:
+                    pass
         else:
             await status_message.edit_text("❌ Не удалось получить транскрипцию. Попробуй ещё раз.")
             
