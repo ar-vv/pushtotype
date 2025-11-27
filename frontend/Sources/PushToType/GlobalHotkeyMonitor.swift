@@ -18,7 +18,7 @@ final class GlobalHotkeyMonitor: @unchecked Sendable {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var isPressed = false
+    private var activeHotkey: Hotkey? // Отслеживаем, какой хоткей сейчас нажат
     private var captureTarget: CaptureTarget?
 
     func start() {
@@ -84,45 +84,74 @@ final class GlobalHotkeyMonitor: @unchecked Sendable {
         let tHK = HotkeyStorage.shared.transcribeHotkey        // без Enter
         let aHK = HotkeyStorage.shared.askHotkey               // вопрос
 
-        if type == .keyDown && mainHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
-            isPressed = true
-            Task { @MainActor [weak self] in
-                self?.onHotkeyDown?()
+        // Обработка нажатия (keyDown)
+        if type == .keyDown {
+            if mainHK.matches(flags: flags, keyCode: keyCode) && activeHotkey == nil {
+                activeHotkey = mainHK
+                Task { @MainActor [weak self] in
+                    self?.onHotkeyDown?()
+                }
+            } else if tHK.matches(flags: flags, keyCode: keyCode) && activeHotkey == nil {
+                activeHotkey = tHK
+                Task { @MainActor [weak self] in
+                    self?.onTranscribeHotkeyDown?()
+                }
+            } else if aHK.matches(flags: flags, keyCode: keyCode) && activeHotkey == nil {
+                activeHotkey = aHK
+                Task { @MainActor [weak self] in
+                    self?.onAskHotkeyDown?()
+                }
             }
         }
 
-        if type == .keyUp && isPressed && mainHK.matches(flags: flags, keyCode: keyCode) {
-            isPressed = false
-            Task { @MainActor [weak self] in
-                self?.onHotkeyUp?()
-            }
-        }
-
-        if type == .keyDown && tHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
-            isPressed = true
-            Task { @MainActor [weak self] in
-                self?.onTranscribeHotkeyDown?()
-            }
-        }
-
-        if type == .keyUp && isPressed && tHK.matches(flags: flags, keyCode: keyCode) {
-            isPressed = false
-            Task { @MainActor [weak self] in
-                self?.onTranscribeHotkeyUp?()
-            }
-        }
-
-        if type == .keyDown && aHK.matches(flags: flags, keyCode: keyCode) && !isPressed {
-            isPressed = true
-            Task { @MainActor [weak self] in
-                self?.onAskHotkeyDown?()
-            }
-        }
-
-        if type == .keyUp && isPressed && aHK.matches(flags: flags, keyCode: keyCode) {
-            isPressed = false
-            Task { @MainActor [weak self] in
-                self?.onAskHotkeyUp?()
+        // Обработка отпускания (keyUp)
+        // Важно: проверяем keyCode и активный хоткей, даже если модификаторы уже отпущены
+        if type == .keyUp {
+            if let active = activeHotkey {
+                // Проверяем, что отпущена именно та клавиша, которая была нажата
+                // Модификаторы могут быть уже отпущены, поэтому проверяем только keyCode
+                if active.keyCode == keyCode {
+                    // Определяем, какой это был хоткей, и вызываем соответствующий callback
+                    if active == mainHK {
+                        activeHotkey = nil
+                        Task { @MainActor [weak self] in
+                            self?.onHotkeyUp?()
+                        }
+                    } else if active == tHK {
+                        activeHotkey = nil
+                        Task { @MainActor [weak self] in
+                            self?.onTranscribeHotkeyUp?()
+                        }
+                    } else if active == aHK {
+                        activeHotkey = nil
+                        Task { @MainActor [weak self] in
+                            self?.onAskHotkeyUp?()
+                        }
+                    }
+                } else {
+                    // Проверяем, не был ли отпущен один из модификаторов активного хоткея
+                    // Если текущие флаги не содержат все модификаторы активного хоткея, останавливаем запись
+                    let currentModifiers = Hotkey.Modifiers(from: flags)
+                    if !currentModifiers.isSuperset(of: active.modifiers) {
+                        // Один из модификаторов был отпущен - останавливаем запись
+                        if active == mainHK {
+                            activeHotkey = nil
+                            Task { @MainActor [weak self] in
+                                self?.onHotkeyUp?()
+                            }
+                        } else if active == tHK {
+                            activeHotkey = nil
+                            Task { @MainActor [weak self] in
+                                self?.onTranscribeHotkeyUp?()
+                            }
+                        } else if active == aHK {
+                            activeHotkey = nil
+                            Task { @MainActor [weak self] in
+                                self?.onAskHotkeyUp?()
+                            }
+                        }
+                    }
+                }
             }
         }
 
