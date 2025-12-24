@@ -1,0 +1,28 @@
+#!/bin/sh
+set -e
+# ⚠️ ВАЖНО: Замените путь ниже на актуальный путь к вашему проекту
+# Например: ROOT="/Users/your_username/Documents/projects/pushtotype"
+ROOT="/path/to/your/pushtotype/project"
+CFG="$ROOT/config.json"
+if [ ! -f "$CFG" ]; then
+  echo "❌ Не найден config.json по пути: $CFG" >&2
+  exit 1
+fi
+# Проверка структуры и печать важного
+HOST=$(python3 -c 'import json,sys;cfg=json.load(open(sys.argv[1]));print(cfg["backend"]["host"])' "$CFG")
+PORT=$(python3 -c 'import json,sys;cfg=json.load(open(sys.argv[1]));print(cfg["backend"]["port"])' "$CFG")
+BASE=$(python3 -c 'import json,sys;cfg=json.load(open(sys.argv[1]));print(cfg["backend"]["base_url"])' "$CFG")
+TIMEOUT=$(python3 -c 'import json,sys;cfg=json.load(open(sys.argv[1]));print(cfg["frontend"].get("timeout",60))' "$CFG")
+if [ -z "$HOST" ] || [ -z "$PORT" ] || [ -z "$BASE" ]; then
+  echo "❌ В config.json отсутствуют обязательные поля backend.host/port/base_url" >&2
+  exit 1
+fi
+echo "✅ Конфиг OK: base_url=$BASE timeout=$TIMEOUT"
+# Быстрая проверка доступности (3 сек таймаут)
+if ! curl -s --connect-timeout 3 --max-time 5 "$BASE/" >/dev/null; then
+  echo "⚠️ Предупреждение: $BASE недоступен сейчас (корневой запрос 404 допустим). Продолжаю сборку." >&2
+fi
+cd "$ROOT/frontend"
+echo "🔨 swift build..."
+swift build
+

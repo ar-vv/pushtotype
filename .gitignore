@@ -1,0 +1,34 @@
+# Конфигурационные файлы с реальными ключами
+config.json
+config.prod.json
+
+# Скрипты с персональными путями
+check_and_build_frontend.sh
+
+# Данные бэкенда (аудио файлы и результаты транскрипции)
+backend/data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Тестовые аудио файлы
+*.m4a
+*.mp3
+*.wav
+*.ogg
+
+# Логи
+*.log
+
