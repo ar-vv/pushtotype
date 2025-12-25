@@ -4,6 +4,7 @@ config.prod.json
 
 # Скрипты с персональными путями
 check_and_build_frontend.sh
+deploy_backend.sh
 
 # Данные бэкенда (аудио файлы и результаты транскрипции)
 backend/data/

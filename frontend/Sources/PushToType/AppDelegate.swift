@@ -21,12 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isRequestingAccessibility = false
     private var currentUploadTask: URLSessionDataTask?
     private var currentPoller: BackendClient.TranscriptionPoller?
+    private var lastAction: RecordingAction = .sendEnter
+    private var lastTranscription: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
         configureHotkeyCallbacks()
         statusHUD.onCancel = { [weak self] in
             self?.cancelCurrentFlow()
+        }
+        statusHUD.onRetry = { [weak self] in
+            self?.retryLastAction()
         }
         requestMicrophoneAccess()
     }
@@ -91,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyMonitor.onHotkeyDown = { [weak self] in
             self?.currentAction = .sendEnter
+            self?.lastAction = .sendEnter
             self?.beginRecording()
         }
 
@@ -100,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyMonitor.onTranscribeHotkeyDown = { [weak self] in
             self?.currentAction = .noEnter
+            self?.lastAction = .noEnter
             self?.beginRecording()
         }
 
@@ -109,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyMonitor.onAskHotkeyDown = { [weak self] in
             self?.currentAction = .ask
+            self?.lastAction = .ask
             self?.beginRecording()
         }
 
@@ -236,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 switch pollResult {
                 case .success(let transcription):
+                    self.lastTranscription = transcription
                     switch self.currentAction {
                     case .ask:
                         self.askChatAndShowAnswer(transcription: transcription)
@@ -272,15 +281,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func askChatAndShowAnswer(transcription: String) {
-        statusHUD.update(stage: .chatResponding)
+        // Скрываем HUD и показываем окно с вопросом сразу
+        statusHUD.hideImmediately()
+        chatWeb.showQuestion(transcription)
+        
+        // Отправляем вопрос на бэкенд
         backendClient.askChatGPT(question: transcription) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let answer):
-                    self?.statusHUD.hideImmediately()
-                    self?.chatWeb.show(markdown: answer)
+                    self?.chatWeb.updateAnswer(answer)
                 case .failure(let error):
-                    self?.statusHUD.update(stage: .error(error.localizedDescription))
+                    // Показываем ошибку в окне
+                    self?.chatWeb.updateAnswer("❌ Ошибка: \(error.localizedDescription)")
                 }
             }
         }
@@ -289,6 +302,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pushTranscriptionToUser(_ transcription: String, sendEnter: Bool) {
         ClipboardManager.shared.store(string: transcription)
         AccessibilityTextInjector.shared.pasteFromClipboard(sendEnter: sendEnter)
+    }
+    
+    /// Повтор последнего действия при ошибке
+    private func retryLastAction() {
+        // Если есть сохраненная транскрипция и последнее действие было "ask", повторяем запрос к ChatGPT
+        if let transcription = lastTranscription, lastAction == .ask {
+            askChatAndShowAnswer(transcription: transcription)
+            return
+        }
+        
+        // Иначе повторяем отправку последнего аудио
+        guard AudioStorage.shared.hasLastRecording else {
+            statusHUD.update(stage: .error("Нет сохраненной записи для повтора"))
+            return
+        }
+        
+        // Восстанавливаем действие для повтора
+        currentAction = lastAction
+        
+        statusHUD.update(stage: .uploading)
+        
+        let url = AudioStorage.shared.lastRecordingURL
+        currentUploadTask = backendClient.uploadAudio(fileURL: url) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let recordingId):
+                    self?.handleUploadSuccess(recordingId: recordingId)
+                case .failure(let error):
+                    self?.statusHUD.update(stage: .error(error.localizedDescription))
+                }
+            }
+        }
     }
 
     private func requestMicrophoneAccess() {

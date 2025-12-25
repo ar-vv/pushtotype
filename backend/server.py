@@ -159,17 +159,28 @@ def transcribe_with_whisper_openai(job_id: str) -> bool:
 
 
 def call_openai_chat(question: str) -> str:
+    """Вызывает OpenAI Responses API для получения ответа на вопрос."""
+    import traceback
+    import json as json_module
+    
     if not OPENAI_API_KEY:
+        print("[Responses API] ❌ OpenAI API key отсутствует")
         return "OpenAI API key отсутствует"
+    
+    url = "https://api.openai.com/v1/responses"
+    
     try:
-        url = "https://api.openai.com/v1/responses"
+        # Пробуем сначала с messages (как в Chat Completions)
+        # Responses API может использовать messages вместо input
         headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Authorization": f"Bearer {OPENAI_API_KEY[:20]}...",  # Логируем только начало ключа
             "Content-Type": "application/json",
         }
+        
+        # Responses API использует input вместо messages
         payload = {
             "model": OPENAI_MODEL,
-            "messages": [
+            "input": [
                 {"role": "system", "content": "Ты лаконично и понятно отвечаешь на вопросы пользователя."},
                 {"role": "user", "content": question},
             ],
@@ -184,35 +195,155 @@ def call_openai_chat(question: str) -> str:
                 }
             ]
         
+        print(f"[Responses API] 📤 Отправляю запрос:")
+        print(f"  URL: {url}")
+        print(f"  Модель: {OPENAI_MODEL}")
+        print(f"  Web search: {USE_WEB_SEARCH}")
+        print(f"  Вопрос: {question[:100]}..." if len(question) > 100 else f"  Вопрос: {question}")
+        # Логируем payload без чувствительных данных
+        safe_payload = {k: v for k, v in payload.items()}
+        print(f"  Payload (без ключа): {json_module.dumps(safe_payload, ensure_ascii=False, indent=2)}")
+        
+        # Восстанавливаем полный ключ для запроса
+        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+        
         resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        print(f"[Responses API] 📥 Получен ответ:")
+        print(f"  Статус: {resp.status_code}")
+        print(f"  Headers: {dict(resp.headers)}")
+        
         if resp.status_code >= 300:
-            return f"Chat error {resp.status_code}: {resp.text}"
-        data = resp.json() or {}
+            error_text = resp.text
+            print(f"[Responses API] ❌ Ошибка HTTP {resp.status_code}:")
+            print(f"  Полный ответ: {error_text[:1000]}")
+            
+            # Пробуем распарсить JSON ошибки
+            try:
+                error_json = resp.json()
+                print(f"  JSON ошибки: {json_module.dumps(error_json, ensure_ascii=False, indent=2)}")
+                error_message = error_json.get("error", {}).get("message", error_text)
+                return f"Chat error {resp.status_code}: {error_message}"
+            except:
+                return f"Chat error {resp.status_code}: {error_text[:500]}"
+        
+        # Парсим успешный ответ
+        try:
+            data = resp.json()
+        except Exception as json_error:
+            print(f"[Responses API] ❌ Ошибка парсинга JSON: {json_error}")
+            print(f"  Сырой ответ: {resp.text[:1000]}")
+            return f"Ошибка парсинга ответа: {json_error}"
+        
+        print(f"[Responses API] ✅ Успешный ответ получен:")
+        print(f"  Ключи в ответе: {list(data.keys())}")
+        print(f"  Полный ответ (первые 2000 символов): {json_module.dumps(data, ensure_ascii=False, indent=2)[:2000]}")
         
         # Парсинг ответа из Responses API
-        # Структура может отличаться от Chat Completions
-        # Пробуем несколько вариантов структуры ответа
+        # Responses API возвращает структуру: output[] -> ищем message -> content[0].text
+        # При использовании веб-поиска в output может быть несколько элементов:
+        # 1. web_search_call - вызов веб-поиска
+        # 2. message - финальный ответ с результатами
         answer = ""
-        if "choices" in data and len(data.get("choices", [])) > 0:
-            # Вариант 1: похожая структура на Chat Completions
-            message = data["choices"][0].get("message", {})
-            answer = message.get("content", "")
-        elif "response" in data:
-            # Вариант 2: прямая структура response
-            answer = data.get("response", "")
-        elif "content" in data:
-            # Вариант 3: прямая структура content
-            answer = data.get("content", "")
-        elif "text" in data:
-            # Вариант 4: структура с text
-            answer = data.get("text", "")
-        else:
-            # Fallback: пытаемся найти текст в любой вложенной структуре
-            answer = str(data).strip()
         
-        return answer.strip() or "Пустой ответ"
+        # Вариант 1: структура Responses API (output -> ищем message -> content -> text)
+        if "output" in data and isinstance(data.get("output"), list) and len(data["output"]) > 0:
+            print(f"[Responses API] 🔍 Найдена структура 'output' (Responses API)")
+            print(f"  Количество элементов в output: {len(data['output'])}")
+            
+            # Ищем элемент типа "message" в массиве output
+            message_item = None
+            for item in data["output"]:
+                if isinstance(item, dict) and item.get("type") == "message":
+                    message_item = item
+                    break
+            
+            # Если не нашли message, берем первый элемент (для обратной совместимости)
+            if message_item is None:
+                message_item = data["output"][0]
+                print(f"  Message не найден, используем первый элемент")
+            
+            print(f"  Output item keys: {list(message_item.keys())}")
+            print(f"  Output item type: {message_item.get('type', 'unknown')}")
+            
+            if "content" in message_item and isinstance(message_item.get("content"), list) and len(message_item["content"]) > 0:
+                content_item = message_item["content"][0]
+                print(f"  Content item keys: {list(content_item.keys())}")
+                
+                if "text" in content_item:
+                    answer = content_item.get("text", "")
+                    print(f"  Извлечен текст из message.content[0].text")
+                elif "content" in content_item:
+                    answer = content_item.get("content", "")
+            elif "text" in message_item:
+                answer = message_item.get("text", "")
+        
+        # Вариант 2: структура как в Chat Completions (choices -> message -> content)
+        elif "choices" in data and isinstance(data.get("choices"), list) and len(data["choices"]) > 0:
+            print(f"[Responses API] 🔍 Найдена структура 'choices' (Chat Completions)")
+            choice = data["choices"][0]
+            print(f"  Choice keys: {list(choice.keys())}")
+            
+            if "message" in choice:
+                message = choice["message"]
+                print(f"  Message keys: {list(message.keys())}")
+                answer = message.get("content", "")
+                if not answer and "text" in message:
+                    answer = message.get("text", "")
+            elif "content" in choice:
+                answer = choice.get("content", "")
+            elif "text" in choice:
+                answer = choice.get("text", "")
+        
+        # Вариант 3: прямая структура response
+        elif "response" in data:
+            print(f"[Responses API] 🔍 Найдена структура 'response'")
+            response_data = data.get("response")
+            if isinstance(response_data, dict):
+                answer = response_data.get("content", "") or response_data.get("text", "") or str(response_data)
+            else:
+                answer = str(response_data)
+        
+        # Вариант 4: прямая структура content
+        elif "content" in data:
+            print(f"[Responses API] 🔍 Найдена структура 'content'")
+            content_data = data.get("content")
+            if isinstance(content_data, dict):
+                answer = content_data.get("text", "") or str(content_data)
+            else:
+                answer = str(content_data)
+        
+        # Fallback: пытаемся найти текст в любой вложенной структуре
+        else:
+            print(f"[Responses API] ⚠️  Неизвестная структура ответа, использую fallback")
+            print(f"  Полная структура данных: {json_module.dumps(data, ensure_ascii=False, indent=2)[:3000]}")
+            answer = str(data)
+        
+        # Убеждаемся, что answer - строка
+        if not isinstance(answer, str):
+            answer = str(answer)
+        
+        answer = answer.strip() if answer else "Пустой ответ"
+        print(f"[Responses API] ✅ Извлеченный ответ ({len(answer)} символов): {answer[:200]}..." if len(answer) > 200 else f"[Responses API] ✅ Извлеченный ответ: {answer}")
+        
+        return answer
+        
+    except requests.exceptions.Timeout:
+        error_msg = "Таймаут запроса к OpenAI API"
+        print(f"[Responses API] ❌ {error_msg}")
+        return f"Chat error: {error_msg}"
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Ошибка сети: {e}"
+        print(f"[Responses API] ❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return f"Chat error: {error_msg}"
     except Exception as e:
-        return f"Chat exception: {e}"
+        error_msg = f"Неожиданная ошибка: {e}"
+        print(f"[Responses API] ❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return f"Chat exception: {error_msg}"
 
 
 @app.post("/api/audio")
@@ -236,9 +367,23 @@ def receive_audio():
     )
 
     def _worker():
-        ok = transcribe_with_whisper_openai(job_id)
-        if not ok:
-            transcribe_with_assemblyai(job_id)
+        try:
+            ok = transcribe_with_whisper_openai(job_id)
+            if not ok:
+                transcribe_with_assemblyai(job_id)
+        except Exception as e:
+            print(f"[Transcription Worker] Критическая ошибка в worker потоке: {e}")
+            import traceback
+            traceback.print_exc()
+            # Устанавливаем статус ошибки для job
+            if job_id in jobs:
+                jobs[job_id].status = "error"
+                jobs[job_id].transcription_text = f"Критическая ошибка транскрибации: {str(e)}"
+                try:
+                    with open(jobs[job_id].transcription_path, "w", encoding="utf-8") as handle:
+                        handle.write(jobs[job_id].transcription_text)
+                except:
+                    pass
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -283,11 +428,13 @@ def chat_endpoint():
         payload = request.get_json(force=True) or {}
         question = (payload.get("question") or "").strip()
         if not question:
-            return jsonify({"error": "question required"}), 400
+            return jsonify({"answer": "Ошибка: вопрос не указан"}), 200
         answer = call_openai_chat(question)
+        # Всегда возвращаем {"answer": "..."} даже при ошибках, чтобы фронтенд мог декодировать
         return jsonify({"answer": answer})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # При исключении тоже возвращаем в формате answer, чтобы фронтенд мог декодировать
+        return jsonify({"answer": f"Ошибка сервера: {str(e)}"}), 200
 
 
 def start_telegram_bot():

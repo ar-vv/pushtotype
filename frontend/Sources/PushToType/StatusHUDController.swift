@@ -32,6 +32,8 @@ final class StatusHUDController: @unchecked Sendable {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.hasShadow = true
+        // Убеждаемся, что панель следует системной теме
+        panel.appearance = NSAppearance.current
 
         let content = NSView(frame: NSRect(origin: .zero, size: panelSize))
         panel.contentView = content
@@ -75,6 +77,8 @@ final class StatusHUDController: @unchecked Sendable {
         largeTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         largeTextView.textContainer?.widthTracksTextView = true
         largeTextView.textContainer?.lineFragmentPadding = 0
+        // Убеждаемся, что текст использует системные цвета для правильного отображения в тёмной теме
+        largeTextView.textColor = .labelColor
         scrollView.documentView = largeTextView
         scrollView.contentView.postsBoundsChangedNotifications = true
         // Подписку на изменение размеров контента добавим после инициализации всех полей
@@ -87,6 +91,7 @@ final class StatusHUDController: @unchecked Sendable {
         closeButton.font = .systemFont(ofSize: 14, weight: .medium)
         closeButton.contentTintColor = .secondaryLabelColor
         closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.appearance = NSAppearance.current
         
         // Добавляем hover эффект
         closeButton.wantsLayer = true
