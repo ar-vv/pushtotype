@@ -231,6 +231,10 @@ final class ChatWebViewController: NSObject, WKNavigationDelegate {
               questionText.innerHTML = div.innerHTML;
               questionSection.style.display = 'block';
             }
+            function showLoader() {
+              const container = document.getElementById('answer-content');
+              container.innerHTML = '<div class="loader"><span>Ожидание ответа</span><div class="loader-dots"><div class="loader-dot"></div><div class="loader-dot"></div><div class="loader-dot"></div></div></div>';
+            }
             function setAnswer(md) {
               try {
                 const html = marked.parse(md);
@@ -247,6 +251,7 @@ final class ChatWebViewController: NSObject, WKNavigationDelegate {
             window.setQuestion = setQuestion;
             window.setAnswer = setAnswer;
             window.setMarkdown = setMarkdown;
+            window.showLoader = showLoader;
           </script>
         </body>
         </html>
@@ -268,6 +273,9 @@ final class ChatWebViewController: NSObject, WKNavigationDelegate {
         }
         window.makeKeyAndOrderFront(nil)
 
+        // Сначала показываем лоадер, затем обновляем вопрос
+        webView.evaluateJavaScript("window.showLoader();", completionHandler: nil)
+        
         // Передаем вопрос после загрузки документа
         let escaped = question
             .replacingOccurrences(of: "\\", with: "\\\\")
