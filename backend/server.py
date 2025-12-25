@@ -23,6 +23,7 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 aai.settings.api_key = config["api_keys"]["assemblyai"]
 OPENAI_API_KEY = config["api_keys"].get("openai", "")
 OPENAI_MODEL = (config.get("openai") or {}).get("model", "gpt-4o-mini")
+USE_WEB_SEARCH = (config.get("openai") or {}).get("use_web_search", False)
 
 app = Flask(__name__)
 
@@ -161,7 +162,7 @@ def call_openai_chat(question: str) -> str:
     if not OPENAI_API_KEY:
         return "OpenAI API key отсутствует"
     try:
-        url = "https://api.openai.com/v1/chat/completions"
+        url = "https://api.openai.com/v1/responses"
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json",
@@ -174,11 +175,41 @@ def call_openai_chat(question: str) -> str:
             ],
             "temperature": 0.2,
         }
+        
+        # Добавляем веб-поиск если включен в конфиге
+        if USE_WEB_SEARCH:
+            payload["tools"] = [
+                {
+                    "type": "web_search"
+                }
+            ]
+        
         resp = requests.post(url, headers=headers, json=payload, timeout=60)
         if resp.status_code >= 300:
             return f"Chat error {resp.status_code}: {resp.text}"
         data = resp.json() or {}
-        answer = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
+        
+        # Парсинг ответа из Responses API
+        # Структура может отличаться от Chat Completions
+        # Пробуем несколько вариантов структуры ответа
+        answer = ""
+        if "choices" in data and len(data.get("choices", [])) > 0:
+            # Вариант 1: похожая структура на Chat Completions
+            message = data["choices"][0].get("message", {})
+            answer = message.get("content", "")
+        elif "response" in data:
+            # Вариант 2: прямая структура response
+            answer = data.get("response", "")
+        elif "content" in data:
+            # Вариант 3: прямая структура content
+            answer = data.get("content", "")
+        elif "text" in data:
+            # Вариант 4: структура с text
+            answer = data.get("text", "")
+        else:
+            # Fallback: пытаемся найти текст в любой вложенной структуре
+            answer = str(data).strip()
+        
         return answer.strip() or "Пустой ответ"
     except Exception as e:
         return f"Chat exception: {e}"
