@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-import assemblyai as aai
+# import assemblyai as aai
 from flask import Flask, jsonify, request, send_from_directory
 import requests
 
@@ -20,7 +20,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-aai.settings.api_key = config["api_keys"]["assemblyai"]
+# aai.settings.api_key = config["api_keys"]["assemblyai"]
 OPENAI_API_KEY = config["api_keys"].get("openai", "")
 OPENAI_MODEL = (config.get("openai") or {}).get("model", "gpt-4o-mini")
 USE_WEB_SEARCH = (config.get("openai") or {}).get("use_web_search", False)
@@ -41,89 +41,89 @@ jobs: Dict[str, TranscriptionJob] = {}
 
 @app.get("/files/<path:filename>")
 def serve_file(filename: str):
-    # Публичная раздача аудиофайла для AssemblyAI по прямому URL
+    # Публичная раздача аудиофайла для AssemblyAI по прямому URL (закомментировано, не используется)
     return send_from_directory(DATA_DIR, filename, mimetype="audio/m4a", as_attachment=False, conditional=True)
 
 
-def transcribe_with_assemblyai(job_id: str) -> None:
-    """Транскрибация через AssemblyAI по публичному URL (audio_url)."""
-    job = jobs[job_id]
-
-    try:
-        # Собираем публичный URL для только что сохранённого файла
-        base_url = (config["backend"]["base_url"]).rstrip("/")
-        audio_url = f"{base_url}/files/{os.path.basename(job.audio_path)}"
-
-        headers = {
-            "authorization": aai.settings.api_key,
-            "content-type": "application/json",
-        }
-        payload = {
-            "audio_url": audio_url,
-            "punctuate": True,
-            "format_text": True,
-            "language_detection": True,
-            # Ускоряем обработку
-            "dual_channel": False,
-            "disfluencies": False,
-            "sentiment_analysis": False,
-            "auto_highlights": False,
-            "entity_detection": False,
-            "iab_categories": False,
-            "content_safety": False,
-        }
-
-        # Создаём задачу транскрибации
-        create = requests.post("https://api.assemblyai.com/v2/transcript", headers=headers, json=payload, timeout=30)
-        if create.status_code >= 300:
-            job.transcription_text = f"Create transcript failed: {create.status_code} {create.text}"
-            job.status = "error"
-            with open(job.transcription_path, "w", encoding="utf-8") as handle:
-                handle.write(job.transcription_text)
-            return
-
-        tid = (create.json() or {}).get("id")
-        if not tid:
-            job.transcription_text = f"Create transcript invalid response: {create.text}"
-            job.status = "error"
-            with open(job.transcription_path, "w", encoding="utf-8") as handle:
-                handle.write(job.transcription_text)
-            return
-
-        # Поллим статус
-        started = time.time()
-        while True:
-            time.sleep(2)
-            poll = requests.get(f"https://api.assemblyai.com/v2/transcript/{tid}", headers=headers, timeout=30)
-            if poll.status_code >= 300:
-                job.transcription_text = f"Poll failed: {poll.status_code} {poll.text}"
-                job.status = "error"
-                break
-
-            data = poll.json() or {}
-            st = (data.get("status") or "").lower()
-            if st == "completed":
-                job.transcription_text = data.get("text") or "Транскрипция пуста"
-                job.status = "ready"
-                break
-            if st == "error":
-                job.transcription_text = data.get("error") or "Ошибка транскрибации"
-                job.status = "error"
-                break
-            if time.time() - started > 600:
-                job.transcription_text = "Таймаут транскрибации"
-                job.status = "error"
-                break
-
-        # Сохраняем результат в файл
-        with open(job.transcription_path, "w", encoding="utf-8") as handle:
-            handle.write(job.transcription_text or "")
-
-    except Exception as e:
-        job.transcription_text = f"Ошибка: {str(e)}"
-        job.status = "error"
-        with open(job.transcription_path, "w", encoding="utf-8") as handle:
-            handle.write(job.transcription_text)
+# def transcribe_with_assemblyai(job_id: str) -> None:
+#     """Транскрибация через AssemblyAI по публичному URL (audio_url)."""
+#     job = jobs[job_id]
+#
+#     try:
+#         # Собираем публичный URL для только что сохранённого файла
+#         base_url = (config["backend"]["base_url"]).rstrip("/")
+#         audio_url = f"{base_url}/files/{os.path.basename(job.audio_path)}"
+#
+#         headers = {
+#             "authorization": aai.settings.api_key,
+#             "content-type": "application/json",
+#         }
+#         payload = {
+#             "audio_url": audio_url,
+#             "punctuate": True,
+#             "format_text": True,
+#             "language_detection": True,
+#             # Ускоряем обработку
+#             "dual_channel": False,
+#             "disfluencies": False,
+#             "sentiment_analysis": False,
+#             "auto_highlights": False,
+#             "entity_detection": False,
+#             "iab_categories": False,
+#             "content_safety": False,
+#         }
+#
+#         # Создаём задачу транскрибации
+#         create = requests.post("https://api.assemblyai.com/v2/transcript", headers=headers, json=payload, timeout=30)
+#         if create.status_code >= 300:
+#             job.transcription_text = f"Create transcript failed: {create.status_code} {create.text}"
+#             job.status = "error"
+#             with open(job.transcription_path, "w", encoding="utf-8") as handle:
+#                 handle.write(job.transcription_text)
+#             return
+#
+#         tid = (create.json() or {}).get("id")
+#         if not tid:
+#             job.transcription_text = f"Create transcript invalid response: {create.text}"
+#             job.status = "error"
+#             with open(job.transcription_path, "w", encoding="utf-8") as handle:
+#                 handle.write(job.transcription_text)
+#             return
+#
+#         # Поллим статус
+#         started = time.time()
+#         while True:
+#             time.sleep(2)
+#             poll = requests.get(f"https://api.assemblyai.com/v2/transcript/{tid}", headers=headers, timeout=30)
+#             if poll.status_code >= 300:
+#                 job.transcription_text = f"Poll failed: {poll.status_code} {poll.text}"
+#                 job.status = "error"
+#                 break
+#
+#             data = poll.json() or {}
+#             st = (data.get("status") or "").lower()
+#             if st == "completed":
+#                 job.transcription_text = data.get("text") or "Транскрипция пуста"
+#                 job.status = "ready"
+#                 break
+#             if st == "error":
+#                 job.transcription_text = data.get("error") or "Ошибка транскрибации"
+#                 job.status = "error"
+#                 break
+#             if time.time() - started > 600:
+#                 job.transcription_text = "Таймаут транскрибации"
+#                 job.status = "error"
+#                 break
+#
+#         # Сохраняем результат в файл
+#         with open(job.transcription_path, "w", encoding="utf-8") as handle:
+#             handle.write(job.transcription_text or "")
+#
+#     except Exception as e:
+#         job.transcription_text = f"Ошибка: {str(e)}"
+#         job.status = "error"
+#         with open(job.transcription_path, "w", encoding="utf-8") as handle:
+#             handle.write(job.transcription_text)
 
 
 def transcribe_with_whisper_openai(job_id: str) -> bool:
@@ -368,9 +368,21 @@ def receive_audio():
 
     def _worker():
         try:
+            # Всегда используем OpenAI для транскрибации (убрали fallback на AssemblyAI для ускорения)
             ok = transcribe_with_whisper_openai(job_id)
             if not ok:
-                transcribe_with_assemblyai(job_id)
+                # Если OpenAI не сработал, просто устанавливаем ошибку
+                if job_id in jobs:
+                    jobs[job_id].status = "error"
+                    jobs[job_id].transcription_text = "Ошибка транскрибации через OpenAI"
+                    try:
+                        with open(jobs[job_id].transcription_path, "w", encoding="utf-8") as handle:
+                            handle.write(jobs[job_id].transcription_text)
+                    except:
+                        pass
+            # Закомментирован fallback на AssemblyAI для ускорения
+            # if not ok:
+            #     transcribe_with_assemblyai(job_id)
         except Exception as e:
             print(f"[Transcription Worker] Критическая ошибка в worker потоке: {e}")
             import traceback
